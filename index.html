@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FORLAB v1.1 - Plate Cropper</title>
+<title>FORLAB v1.2 - Plate Cropper</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
   *{margin:0;padding:0;box-sizing:border-box}
@@ -244,7 +244,7 @@
 <!-- Top bar -->
 <div class="topbar">
   <div class="topbar-left">
-    <h1>FORLAB <span style="font-size:12px;font-weight:400;opacity:0.7;letter-spacing:0.05em">v1.1</span></h1>
+    <h1>FORLAB <span style="font-size:12px;font-weight:400;opacity:0.7;letter-spacing:0.05em">v1.2</span></h1>
     <div class="progress-mini" id="progressArea">
       <span id="progressText">0 / 0</span>
       <div class="bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
@@ -442,174 +442,163 @@
     const xc=c.getContext('2d');xc.drawImage(img,0,0,w,h);
     const d=xc.getImageData(0,0,w,h).data;
 
-    // Grayscale
-    const gray=new Float32Array(w*h);
-    for(let i=0;i<w*h;i++) gray[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
-
-    // Gaussian blur 5x5 (sigma~1.4)
+    // Gaussian blur for a single-channel image
     function gaussBlur(src,W,H){
       const k=[1,4,6,4,1];
-      const tmp=new Float32Array(W*H);
-      const out=new Float32Array(W*H);
+      const tmp=new Float32Array(W*H), out=new Float32Array(W*H);
       for(let y=0;y<H;y++) for(let x=0;x<W;x++){
         let s=0,wt=0;
-        for(let dx=-2;dx<=2;dx++){
-          const nx=Math.min(W-1,Math.max(0,x+dx));
-          s+=src[y*W+nx]*k[dx+2]; wt+=k[dx+2];
-        }
+        for(let dx=-2;dx<=2;dx++){const nx=Math.min(W-1,Math.max(0,x+dx));s+=src[y*W+nx]*k[dx+2];wt+=k[dx+2];}
         tmp[y*W+x]=s/wt;
       }
       for(let y=0;y<H;y++) for(let x=0;x<W;x++){
         let s=0,wt=0;
-        for(let dy=-2;dy<=2;dy++){
-          const ny=Math.min(H-1,Math.max(0,y+dy));
-          s+=tmp[ny*W+x]*k[dy+2]; wt+=k[dy+2];
-        }
+        for(let dy=-2;dy<=2;dy++){const ny=Math.min(H-1,Math.max(0,y+dy));s+=tmp[ny*W+x]*k[dy+2];wt+=k[dy+2];}
         out[y*W+x]=s/wt;
       }
       return out;
     }
 
-    const blurred=gaussBlur(gray,w,h);
-
-    // Otsu's threshold
+    // Otsu's threshold on a float array
     function otsuThreshold(data,len){
       const hist=new Float32Array(256);
-      for(let i=0;i<len;i++) hist[Math.min(255,Math.round(data[i]))]++;
-      const total=len;
-      let sumAll=0;
-      for(let i=0;i<256;i++) sumAll+=i*hist[i];
+      for(let i=0;i<len;i++) hist[Math.min(255,Math.max(0,Math.round(data[i])))]++;
+      let sumAll=0;for(let i=0;i<256;i++) sumAll+=i*hist[i];
       let sumBg=0,wBg=0,best=0,thr=128;
       for(let t=0;t<256;t++){
-        wBg+=hist[t]; if(wBg===0) continue;
-        const wFg=total-wBg; if(wFg===0) break;
-        sumBg+=t*hist[t];
-        const mBg=sumBg/wBg, mFg=(sumAll-sumBg)/wFg;
+        wBg+=hist[t];if(wBg===0)continue;const wFg=len-wBg;if(wFg===0)break;
+        sumBg+=t*hist[t];const mBg=sumBg/wBg,mFg=(sumAll-sumBg)/wFg;
         const between=wBg*wFg*(mBg-mFg)*(mBg-mFg);
         if(between>best){best=between;thr=t;}
       }
       return thr;
     }
 
-    function findBestRect(binary,W,H){
-      function morph(src,W,H,r,isDilate){
-        const out=new Uint8Array(W*H);
-        for(let y=0;y<H;y++) for(let x=0;x<W;x++){
-          let val=isDilate?0:1;
-          for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
-            const ny=y+dy,nx=x+dx;
-            if(ny<0||ny>=H||nx<0||nx>=W) continue;
-            if(isDilate) val=Math.max(val,src[ny*W+nx]);
-            else val=Math.min(val,src[ny*W+nx]);
-          }
-          out[y*W+x]=val;
+    // Morphological operation
+    function morph(src,W,H,r,isDilate){
+      const out=new Uint8Array(W*H);
+      for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+        let val=isDilate?0:1;
+        for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
+          const ny=y+dy,nx=x+dx;
+          if(ny<0||ny>=H||nx<0||nx>=W) continue;
+          if(isDilate) val=Math.max(val,src[ny*W+nx]);
+          else val=Math.min(val,src[ny*W+nx]);
         }
-        return out;
+        out[y*W+x]=val;
       }
+      return out;
+    }
 
-      // Larger morphological radius to bridge gaps from gel bands/lanes
+    // Find bounding rect of largest connected component
+    function findBestRect(binary,W,H,preferNotFullImage){
       const mr=Math.max(3,Math.round(Math.min(W,H)*0.03));
       let cleaned=morph(binary,W,H,mr,true);
       cleaned=morph(cleaned,W,H,mr,false);
 
-      // Connected component labeling (flood fill)
       const labels=new Int32Array(W*H);
-      let nextLabel=1;
-      const compSize=[];
-      const compBounds=[];
+      let nextLabel=1;const compSize=[],compBounds=[];
 
       for(let y=0;y<H;y++) for(let x=0;x<W;x++){
-        if(cleaned[y*W+x]===1 && labels[y*W+x]===0){
-          const label=nextLabel++;
-          const stack=[[x,y]];
+        if(cleaned[y*W+x]===1&&labels[y*W+x]===0){
+          const label=nextLabel++;const stack=[[x,y]];
           let x1=x,y1=y,x2=x,y2=y,size=0;
           while(stack.length>0){
-            const [cx,cy]=stack.pop();
-            if(cx<0||cx>=W||cy<0||cy>=H) continue;
-            if(labels[cy*W+cx]!==0||cleaned[cy*W+cx]!==1) continue;
-            labels[cy*W+cx]=label;
-            size++;
-            if(cx<x1)x1=cx;if(cx>x2)x2=cx;
-            if(cy<y1)y1=cy;if(cy>y2)y2=cy;
+            const[cx,cy]=stack.pop();
+            if(cx<0||cx>=W||cy<0||cy>=H)continue;
+            if(labels[cy*W+cx]!==0||cleaned[cy*W+cx]!==1)continue;
+            labels[cy*W+cx]=label;size++;
+            if(cx<x1)x1=cx;if(cx>x2)x2=cx;if(cy<y1)y1=cy;if(cy>y2)y2=cy;
             stack.push([cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]);
           }
-          compSize.push(size);
-          compBounds.push({x1,y1,x2,y2,label});
+          compSize.push(size);compBounds.push({x1,y1,x2,y2});
         }
       }
-
       if(compBounds.length===0) return null;
 
-      let bestScore=-1, bestR=null;
-      const imgArea=W*H;
-
+      let bestScore=-1,bestR=null;const imgArea=W*H;
       for(let i=0;i<compBounds.length;i++){
         const b=compBounds[i];
-        const bw=b.x2-b.x1+1, bh=b.y2-b.y1+1;
-        const bboxArea=bw*bh;
-        const fillRatio=compSize[i]/bboxArea;
+        const bw=b.x2-b.x1+1,bh=b.y2-b.y1+1;
+        const fillRatio=compSize[i]/(bw*bh);
         const sizeRatio=compSize[i]/imgArea;
+        if(sizeRatio<0.03||bw<W*0.08||bh<H*0.08)continue;
 
-        // Skip tiny components (< 3% of image)
-        if(sizeRatio<0.03) continue;
-        if(bw<W*0.08||bh<H*0.08) continue;
+        // Skip near-full-image components (background)
+        const touchesAll=(b.x1<=2&&b.y1<=2&&b.x2>=W-3&&b.y2>=H-3);
+        if(touchesAll&&sizeRatio>0.85)continue;
 
-        // Only skip if touches ALL 4 edges AND fills >95% (clearly background)
-        const touchesAllEdges=(b.x1<=1&&b.y1<=1&&b.x2>=W-2&&b.y2>=H-2);
-        if(touchesAllEdges && sizeRatio>0.95) continue;
+        // Penalize components that span almost the full image
+        const wRatio=bw/W, hRatio=bh/H;
+        const fullImagePenalty=(wRatio>0.95&&hRatio>0.95)?0.1:
+                               (wRatio>0.90&&hRatio>0.90)?0.3:1.0;
+        if(preferNotFullImage&&fullImagePenalty<0.5)continue;
 
-        // Centrality bonus: prefer components whose center is near image center
-        const compCx=(b.x1+b.x2)/2, compCy=(b.y1+b.y2)/2;
-        const distFromCenter=Math.sqrt(((compCx-W/2)/(W/2))**2+((compCy-H/2)/(H/2))**2);
-        const centralityBonus=1.0-distFromCenter*0.3;
+        const compCx=(b.x1+b.x2)/2,compCy=(b.y1+b.y2)/2;
+        const cdist=Math.sqrt(((compCx-W/2)/(W/2))**2+((compCy-H/2)/(H/2))**2);
+        const centralityBonus=1.0-cdist*0.3;
 
-        let score=fillRatio*sizeRatio*100*centralityBonus;
-
-        // Mild penalty for edge-touching (only 5% per edge instead of 10%)
+        let score=fillRatio*sizeRatio*100*centralityBonus*fullImagePenalty;
         const edgeTouches=(b.x1<=1?1:0)+(b.y1<=1?1:0)+(b.x2>=W-2?1:0)+(b.y2>=H-2?1:0);
-        score*=(1-edgeTouches*0.05);
+        score*=(1-edgeTouches*0.08);
 
-        if(score>bestScore){
-          bestScore=score;
-          bestR={x:b.x1,y:b.y1,w:bw,h:bh,fill:fillRatio,size:sizeRatio};
-        }
+        if(score>bestScore){bestScore=score;bestR={x:b.x1,y:b.y1,w:bw,h:bh,fill:fillRatio,size:sizeRatio};}
       }
       return bestR;
     }
 
+    // === METHOD 1: Color/Saturation-based detection (best for stained gels) ===
+    // Gels typically have a distinct blue/purple hue vs. gray metallic background
+    const sat=new Float32Array(w*h);
+    const colorDiff=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++){
+      const r=d[i*4],g=d[i*4+1],b=d[i*4+2];
+      const mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+      sat[i]=mx>0?(mx-mn)/mx*255:0;
+      // Blue/purple dominance: how much blue exceeds the average of red and green
+      colorDiff[i]=Math.max(0, b-(r+g)/2 + 30); // +30 offset to catch faint gels
+    }
+    const satBlurred=gaussBlur(sat,w,h);
+    const colorBlurred=gaussBlur(colorDiff,w,h);
+
+    // Combine saturation and color difference
+    const colorScore=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++) colorScore[i]=satBlurred[i]*0.5+colorBlurred[i]*0.5;
+
+    const colorThr=otsuThreshold(colorScore,w*h);
+    const binColor=new Uint8Array(w*h);
+    for(let i=0;i<w*h;i++) binColor[i]=colorScore[i]>=colorThr?1:0;
+    const rectColor=findBestRect(binColor,w,h,true);
+
+    // Also try with just saturation
+    const satThr=otsuThreshold(satBlurred,w*h);
+    const binSat=new Uint8Array(w*h);
+    for(let i=0;i<w*h;i++) binSat[i]=satBlurred[i]>=satThr?1:0;
+    const rectSat=findBestRect(binSat,w,h,true);
+
+    // === METHOD 2: Grayscale-based detection (fallback) ===
+    const gray=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++) gray[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+    const blurred=gaussBlur(gray,w,h);
     const thr=otsuThreshold(blurred,w*h);
 
-    // Try dark-on-light (gel darker)
     const binDark=new Uint8Array(w*h);
     for(let i=0;i<w*h;i++) binDark[i]=blurred[i]<thr?1:0;
-    const rectDark=findBestRect(binDark,w,h);
+    const rectDark=findBestRect(binDark,w,h,true);
 
-    // Try light-on-dark (gel brighter, e.g. UV illumination)
     const binLight=new Uint8Array(w*h);
     for(let i=0;i<w*h;i++) binLight[i]=blurred[i]>=thr?1:0;
-    const rectLight=findBestRect(binLight,w,h);
+    const rectLight=findBestRect(binLight,w,h,true);
 
-    // Multi-threshold: try thresholds offset from Otsu for better separation
-    const thrLow=Math.max(0,thr-25), thrHigh=Math.min(255,thr+25);
-    const binDarkLow=new Uint8Array(w*h);
-    for(let i=0;i<w*h;i++) binDarkLow[i]=blurred[i]<thrLow?1:0;
-    const rectDarkLow=findBestRect(binDarkLow,w,h);
-    const binLightHigh=new Uint8Array(w*h);
-    for(let i=0;i<w*h;i++) binLightHigh[i]=blurred[i]>=thrHigh?1:0;
-    const rectLightHigh=findBestRect(binLightHigh,w,h);
-
-    // Sobel edge detection
+    // === METHOD 3: Edge-based detection ===
     const edges=new Float32Array(w*h);
     for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
       const gx=-blurred[(y-1)*w+x-1]+blurred[(y-1)*w+x+1]-2*blurred[y*w+x-1]+2*blurred[y*w+x+1]-blurred[(y+1)*w+x-1]+blurred[(y+1)*w+x+1];
       const gy=-blurred[(y-1)*w+x-1]-2*blurred[(y-1)*w+x]-blurred[(y-1)*w+x+1]+blurred[(y+1)*w+x-1]+2*blurred[(y+1)*w+x]+blurred[(y+1)*w+x+1];
       edges[y*w+x]=Math.sqrt(gx*gx+gy*gy);
     }
-
-    // Edge-based: separate H/V edges, project, find peaks
     let maxE=0;for(let i=0;i<edges.length;i++) if(edges[i]>maxE) maxE=edges[i];
-    const hEdges=new Float32Array(w*h);
-    const vEdges=new Float32Array(w*h);
+    const hEdges=new Float32Array(w*h),vEdges=new Float32Array(w*h);
     for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
       const gx=-blurred[(y-1)*w+x-1]+blurred[(y-1)*w+x+1]-2*blurred[y*w+x-1]+2*blurred[y*w+x+1]-blurred[(y+1)*w+x-1]+blurred[(y+1)*w+x+1];
       const gy=-blurred[(y-1)*w+x-1]-2*blurred[(y-1)*w+x]-blurred[(y-1)*w+x+1]+blurred[(y+1)*w+x-1]+2*blurred[(y+1)*w+x]+blurred[(y+1)*w+x+1];
@@ -619,109 +608,97 @@
         else vEdges[y*w+x]=mag;
       }
     }
+    const hProj=new Float32Array(h),vProj=new Float32Array(w);
+    for(let y=0;y<h;y++){let s=0;for(let x=0;x<w;x++)s+=hEdges[y*w+x];hProj[y]=s;}
+    for(let x=0;x<w;x++){let s=0;for(let y=0;y<h;y++)s+=vEdges[y*w+x];vProj[x]=s;}
 
-    // Smooth projections to reduce noise
-    const hProj=new Float32Array(h);
-    for(let y=0;y<h;y++){let s=0;for(let x=0;x<w;x++) s+=hEdges[y*w+x];hProj[y]=s;}
-    const vProj=new Float32Array(w);
-    for(let x=0;x<w;x++){let s=0;for(let y=0;y<h;y++) s+=vEdges[y*w+x];vProj[x]=s;}
-
-    // Smooth projections with a small moving-average window
     function smoothProj(proj,len){
-      const out=new Float32Array(len);
-      const r=Math.max(1,Math.round(len*0.01));
-      for(let i=0;i<len;i++){
-        let s=0,c=0;
-        for(let j=Math.max(0,i-r);j<=Math.min(len-1,i+r);j++){s+=proj[j];c++;}
-        out[i]=s/c;
-      }
+      const out=new Float32Array(len),r=Math.max(1,Math.round(len*0.015));
+      for(let i=0;i<len;i++){let s=0,c=0;for(let j=Math.max(0,i-r);j<=Math.min(len-1,i+r);j++){s+=proj[j];c++;}out[i]=s/c;}
       return out;
     }
-    const hProjS=smoothProj(hProj,h);
-    const vProjS=smoothProj(vProj,w);
-
     function findPeaks(proj,len,minGap){
-      let maxP=0;for(let i=0;i<len;i++) if(proj[i]>maxP) maxP=proj[i];
-      const thr=maxP*.3;
-      const peaks=[];
+      let maxP=0;for(let i=0;i<len;i++) if(proj[i]>maxP)maxP=proj[i];
+      const thr=maxP*.3,peaks=[];
       for(let i=2;i<len-2;i++){
-        if(proj[i]>thr && proj[i]>=proj[i-1] && proj[i]>=proj[i+1]){
+        if(proj[i]>thr&&proj[i]>=proj[i-1]&&proj[i]>=proj[i+1]){
           let isMax=true;
-          for(let j=Math.max(0,i-minGap);j<=Math.min(len-1,i+minGap);j++){
-            if(j!==i && proj[j]>proj[i]){isMax=false;break;}
-          }
-          if(isMax) peaks.push({pos:i,val:proj[i]});
+          for(let j=Math.max(0,i-minGap);j<=Math.min(len-1,i+minGap);j++){if(j!==i&&proj[j]>proj[i]){isMax=false;break;}}
+          if(isMax)peaks.push({pos:i,val:proj[i]});
         }
       }
-      peaks.sort((a,b)=>b.val-a.val);
-      return peaks;
+      peaks.sort((a,b)=>b.val-a.val);return peaks;
     }
-
-    const hPeaks=findPeaks(hProjS,h,Math.round(h*.10));
-    const vPeaks=findPeaks(vProjS,w,Math.round(w*.10));
+    const hPeaks=findPeaks(smoothProj(hProj,h),h,Math.round(h*.10));
+    const vPeaks=findPeaks(smoothProj(vProj,w),w,Math.round(w*.10));
 
     let rectEdge=null;
     if(hPeaks.length>=2&&vPeaks.length>=2){
       let bestScore=-1;
-      const topH=hPeaks.slice(0,5), topV=vPeaks.slice(0,5);
-      const minW=w*.15,minH=h*.15;
-
+      const topH=hPeaks.slice(0,5),topV=vPeaks.slice(0,5);
       for(let i=0;i<topH.length;i++) for(let j=i+1;j<topH.length;j++){
-        const y1=Math.min(topH[i].pos,topH[j].pos);
-        const y2=Math.max(topH[i].pos,topH[j].pos);
-        if(y2-y1<minH) continue;
+        const y1=Math.min(topH[i].pos,topH[j].pos),y2=Math.max(topH[i].pos,topH[j].pos);
+        if(y2-y1<h*.15)continue;
         for(let k=0;k<topV.length;k++) for(let l=k+1;l<topV.length;l++){
-          const x1=Math.min(topV[k].pos,topV[l].pos);
-          const x2=Math.max(topV[k].pos,topV[l].pos);
-          if(x2-x1<minW) continue;
+          const x1=Math.min(topV[k].pos,topV[l].pos),x2=Math.max(topV[k].pos,topV[l].pos);
+          if(x2-x1<w*.15)continue;
+          // Skip if this rect spans nearly the full image
+          if((x2-x1)>w*0.92&&(y2-y1)>h*0.92)continue;
           let score=0,count=0;
           for(let x=x1;x<=x2;x+=2){score+=hEdges[y1*w+x]+hEdges[y2*w+x];count+=2;}
           for(let y=y1;y<=y2;y+=2){score+=vEdges[y*w+x1]+vEdges[y*w+x2];count+=2;}
           score=count>0?score/count:0;
-          const area=(x2-x1)*(y2-y1), areaRatio=area/(w*h);
-          // Bonus for area and centrality
-          const cx=(x1+x2)/2, cy=(y1+y2)/2;
+          const area=(x2-x1)*(y2-y1),areaRatio=area/(w*h);
+          const cx=(x1+x2)/2,cy=(y1+y2)/2;
           const cdist=Math.sqrt(((cx-w/2)/(w/2))**2+((cy-h/2)/(h/2))**2);
           score*=(1+areaRatio*0.5)*(1-cdist*0.2);
-          if(score>bestScore){
-            bestScore=score;
-            rectEdge={x:x1,y:y1,w:x2-x1,h:y2-y1,fill:0.8,size:areaRatio};
-          }
+          if(score>bestScore){bestScore=score;rectEdge={x:x1,y:y1,w:x2-x1,h:y2-y1,fill:0.8,size:areaRatio};}
         }
       }
     }
 
-    // Pick best candidate among all methods
-    const candidates=[rectDark,rectLight,rectDarkLow,rectLightHigh,rectEdge].filter(r=>r!==null);
+    // === Pick best candidate ===
+    // Color-based results get priority (tagged with isColor)
+    const allCandidates=[];
+    if(rectColor) allCandidates.push({...rectColor,isColor:true});
+    if(rectSat) allCandidates.push({...rectSat,isColor:true});
+    if(rectDark) allCandidates.push({...rectDark,isColor:false});
+    if(rectLight) allCandidates.push({...rectLight,isColor:false});
+    if(rectEdge) allCandidates.push({...rectEdge,isColor:false});
 
-    if(candidates.length===0){
+    if(allCandidates.length===0){
       return{x:img.naturalWidth*0.1,y:img.naturalHeight*0.1,
              w:img.naturalWidth*0.8,h:img.naturalHeight*0.8};
     }
 
-    // Score each candidate
-    let best=candidates[0], bestS=-1;
-    for(const r of candidates){
+    let best=allCandidates[0],bestS=-1;
+    for(const r of allCandidates){
       const aspectRatio=Math.max(r.w,r.h)/Math.min(r.w,r.h);
-      // Smoother size bonus curve
+      const wRatio=r.w/w, hRatio=r.h/h;
+
+      // Strong penalty for near-full-image rects
       let sizeBonus;
-      if(r.size>0.08&&r.size<0.92) sizeBonus=1.0;
-      else if(r.size>=0.92) sizeBonus=0.6;
+      if(wRatio>0.92&&hRatio>0.92) sizeBonus=0.05;
+      else if(r.size>0.08&&r.size<0.85) sizeBonus=1.0;
+      else if(r.size>=0.85) sizeBonus=0.4;
       else sizeBonus=0.4;
+
       const fillBonus=r.fill||0.5;
       const aspectPenalty=aspectRatio>6?0.4:(aspectRatio>4?0.7:1);
-      // Centrality of the detected rect within the scaled image
-      const rcx=(r.x+r.w/2)/w, rcy=(r.y+r.h/2)/h;
+      const rcx=(r.x+r.w/2)/w,rcy=(r.y+r.h/2)/h;
       const cdist=Math.sqrt((rcx-0.5)**2+(rcy-0.5)**2);
       const centralBonus=1.0-cdist*0.4;
-      const s=fillBonus*sizeBonus*aspectPenalty*centralBonus*(r.size||0.1);
+
+      // Color-based detections get a strong bonus (most reliable for stained gels)
+      const colorBonus=r.isColor?2.0:1.0;
+
+      const s=fillBonus*sizeBonus*aspectPenalty*centralBonus*colorBonus*(r.size||0.1);
       if(s>bestS){bestS=s;best=r;}
     }
 
-    // Add small padding (2% of dimensions)
-    const px=Math.round(w*0.01), py=Math.round(h*0.01);
-    let rx=Math.max(0,best.x-px), ry=Math.max(0,best.y-py);
-    let rw=Math.min(w-rx,best.w+2*px), rh=Math.min(h-ry,best.h+2*py);
+    const px=Math.round(w*0.01),py=Math.round(h*0.01);
+    let rx=Math.max(0,best.x-px),ry=Math.max(0,best.y-py);
+    let rw=Math.min(w-rx,best.w+2*px),rh=Math.min(h-ry,best.h+2*py);
 
     return{x:rx/sd,y:ry/sd,w:rw/sd,h:rh/sd};
   }
