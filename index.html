@@ -66,6 +66,34 @@
   .toolbar .size-val{color:var(--text);min-width:32px;font-size:11px}
   .detecting{color:#c4b5fd;font-size:11px;animation:pulse 1s infinite}
 
+  /* Help modal */
+  .help-overlay{
+    position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
+    display:flex;align-items:center;justify-content:center;
+    backdrop-filter:blur(4px);
+  }
+  .help-overlay.hidden{display:none}
+  .help-modal{
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    width:90%;max-width:520px;max-height:80vh;display:flex;flex-direction:column;
+    box-shadow:0 20px 60px rgba(0,0,0,.5);
+  }
+  .help-header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:16px 20px;border-bottom:1px solid var(--border);
+  }
+  .help-header h2{
+    font-size:15px;font-weight:700;
+    background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  }
+  .help-body{
+    padding:20px;overflow-y:auto;
+  }
+  .help-section{margin-bottom:16px}
+  .help-section h3{font-size:12px;color:var(--accent);margin-bottom:4px}
+  .help-section p{font-size:11px;color:var(--muted);line-height:1.7}
+  .help-section strong{color:var(--text)}
+
   /* Main content area */
   .main{
     flex:1;display:flex;overflow:hidden;min-height:0;
@@ -220,6 +248,47 @@
     <div class="progress-mini" id="progressArea">
       <span id="progressText">0 / 0</span>
       <div class="bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
+    </div>
+  </div>
+  <button class="btn btn-ghost btn-sm" id="helpBtn" title="사용법">? 사용법</button>
+</div>
+
+<!-- Help Modal -->
+<div class="help-overlay hidden" id="helpOverlay">
+  <div class="help-modal">
+    <div class="help-header">
+      <h2>FORLAB 사용법</h2>
+      <button class="btn btn-ghost btn-sm" id="helpCloseBtn">닫기 ✕</button>
+    </div>
+    <div class="help-body">
+      <div class="help-section">
+        <h3>1. 이미지 업로드</h3>
+        <p>시작 화면에서 이미지를 <strong>드래그 앤 드롭</strong>하거나 클릭하여 파일을 선택합니다. 여러 장을 한 번에 업로드할 수 있습니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>2. 감지 모드 선택</h3>
+        <p>툴바의 모드 버튼으로 <strong>원형(페트리 접시)</strong> 또는 <strong>사각형(젤)</strong> 감지 모드를 전환합니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>3. 자동 감지 및 수동 조정</h3>
+        <p>이미지가 로드되면 자동으로 영역이 감지됩니다. 감지된 영역을 <strong>드래그</strong>하여 위치를 조정하거나, 가장자리를 드래그하여 크기를 변경할 수 있습니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>4. 크롭 크기 조절</h3>
+        <p>툴바의 <strong>크롭 슬라이더</strong>로 크롭 영역의 크기를 60%~120%까지 조절합니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>5. 확인 및 크롭</h3>
+        <p><strong>확인</strong> 버튼으로 각 이미지를 확정하거나, <strong>전체 자동 확인</strong>으로 모든 이미지를 한 번에 확정합니다. 확정 후 <strong>전체 크롭</strong>을 누르면 결과가 우측 패널에 표시됩니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>6. 결과 다운로드</h3>
+        <p>크롭된 이미지를 개별 또는 <strong>전체 다운로드</strong>할 수 있습니다. 클립보드 복사와 공유 기능도 지원합니다.</p>
+      </div>
+      <div class="help-section">
+        <h3>단축키</h3>
+        <p><strong>← →</strong> 이전/다음 이미지 &nbsp;|&nbsp; <strong>Enter</strong> 확인</p>
+      </div>
     </div>
   </div>
 </div>
@@ -1170,6 +1239,11 @@
     resizer.addEventListener('pointerup',function(){resizer.classList.remove('active')});
     resizer.addEventListener('lostpointercapture',function(){resizer.classList.remove('active')});
   })();
+
+  // Help modal
+  $('helpBtn').addEventListener('click',()=>$('helpOverlay').classList.remove('hidden'));
+  $('helpCloseBtn').addEventListener('click',()=>$('helpOverlay').classList.add('hidden'));
+  $('helpOverlay').addEventListener('click',e=>{if(e.target===$('helpOverlay'))$('helpOverlay').classList.add('hidden');});
 
   window.addEventListener('resize',()=>{
     if(!images.length)return;
