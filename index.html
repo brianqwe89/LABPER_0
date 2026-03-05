@@ -229,6 +229,12 @@
   <span class="detecting hidden" id="detectingLabel">● 감지 중</span>
 
   <div class="toolbar-group">
+    <button class="btn btn-outline btn-sm" id="modeToggleBtn" title="감지 모드 전환">○ 원형</button>
+  </div>
+
+  <div class="sep"></div>
+
+  <div class="toolbar-group">
     <label>
       크롭
       <input type="range" min="60" max="120" value="100" id="cropSizeSlider">
@@ -307,6 +313,7 @@
   let cropSize=100;
   let dragging=null;
   let scale=1,offX=0,offY=0,dispW=0,dispH=0;
+  let detectionMode='circle'; // 'circle' or 'rect'
 
   const $=id=>document.getElementById(id);
   const mainCanvas=$('mainCanvas'),ctx=mainCanvas.getContext('2d');
@@ -357,6 +364,150 @@
     return{cx:bx/sd,cy:by/sd,r:br/sd};
   }
 
+  // --- Rectangle Detection for Gel Photos ---
+  function detectGelRect(img){
+    const c=document.createElement('canvas');
+    const sz=400,sd=Math.min(sz/img.naturalWidth,sz/img.naturalHeight);
+    const w=Math.round(img.naturalWidth*sd),h=Math.round(img.naturalHeight*sd);
+    c.width=w;c.height=h;
+    const xc=c.getContext('2d');xc.drawImage(img,0,0,w,h);
+    const d=xc.getImageData(0,0,w,h).data;
+
+    // Grayscale
+    const gray=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++) gray[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+
+    // Box blur 3x3
+    const blurred=new Float32Array(w*h);
+    for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+      let s=0;
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) s+=gray[(y+dy)*w+(x+dx)];
+      blurred[y*w+x]=s/9;
+    }
+
+    // Sobel edge detection
+    const edges=new Float32Array(w*h);
+    for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+      const gx=-blurred[(y-1)*w+x-1]+blurred[(y-1)*w+x+1]-2*blurred[y*w+x-1]+2*blurred[y*w+x+1]-blurred[(y+1)*w+x-1]+blurred[(y+1)*w+x+1];
+      const gy=-blurred[(y-1)*w+x-1]-2*blurred[(y-1)*w+x]-blurred[(y-1)*w+x+1]+blurred[(y+1)*w+x-1]+2*blurred[(y+1)*w+x]+blurred[(y+1)*w+x+1];
+      edges[y*w+x]=Math.sqrt(gx*gx+gy*gy);
+    }
+    let maxE=0;for(let i=0;i<edges.length;i++) if(edges[i]>maxE) maxE=edges[i];
+
+    // Separate horizontal and vertical edges using gradient direction
+    const hEdges=new Float32Array(w*h);
+    const vEdges=new Float32Array(w*h);
+    for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+      const gx=-blurred[(y-1)*w+x-1]+blurred[(y-1)*w+x+1]-2*blurred[y*w+x-1]+2*blurred[y*w+x+1]-blurred[(y+1)*w+x-1]+blurred[(y+1)*w+x+1];
+      const gy=-blurred[(y-1)*w+x-1]-2*blurred[(y-1)*w+x]-blurred[(y-1)*w+x+1]+blurred[(y+1)*w+x-1]+2*blurred[(y+1)*w+x]+blurred[(y+1)*w+x+1];
+      const mag=Math.sqrt(gx*gx+gy*gy);
+      if(mag>maxE*.15){
+        // gy dominant = horizontal edge, gx dominant = vertical edge
+        if(Math.abs(gy)>Math.abs(gx)) hEdges[y*w+x]=mag;
+        else vEdges[y*w+x]=mag;
+      }
+    }
+
+    // Project horizontal edges onto Y axis
+    const hProj=new Float32Array(h);
+    for(let y=0;y<h;y++){
+      let s=0;for(let x=0;x<w;x++) s+=hEdges[y*w+x];
+      hProj[y]=s;
+    }
+
+    // Project vertical edges onto X axis
+    const vProj=new Float32Array(w);
+    for(let x=0;x<w;x++){
+      let s=0;for(let y=0;y<h;y++) s+=vEdges[y*w+x];
+      vProj[x]=s;
+    }
+
+    // Find peaks in projections
+    function findPeaks(proj,len,minGap){
+      let maxP=0;for(let i=0;i<len;i++) if(proj[i]>maxP) maxP=proj[i];
+      const thr=maxP*.3;
+      const peaks=[];
+      for(let i=2;i<len-2;i++){
+        if(proj[i]>thr && proj[i]>=proj[i-1] && proj[i]>=proj[i+1]){
+          // local max in small window
+          let isMax=true;
+          for(let j=Math.max(0,i-minGap);j<=Math.min(len-1,i+minGap);j++){
+            if(j!==i && proj[j]>proj[i]){isMax=false;break;}
+          }
+          if(isMax) peaks.push({pos:i,val:proj[i]});
+        }
+      }
+      peaks.sort((a,b)=>b.val-a.val);
+      return peaks;
+    }
+
+    const hPeaks=findPeaks(hProj,h,Math.round(h*.05));
+    const vPeaks=findPeaks(vProj,w,Math.round(w*.05));
+
+    // Find best rectangle: try all pairs of horizontal and vertical peaks
+    // Score by edge density along the rectangle border
+    let bestScore=-1,bestRect={x:0,y:0,w:w,h:h};
+    const minW=w*.15,minH=h*.15;
+
+    const topH=hPeaks.slice(0,8);
+    const topV=vPeaks.slice(0,8);
+
+    for(let i=0;i<topH.length;i++) for(let j=i+1;j<topH.length;j++){
+      const y1=Math.min(topH[i].pos,topH[j].pos);
+      const y2=Math.max(topH[i].pos,topH[j].pos);
+      if(y2-y1<minH) continue;
+
+      for(let k=0;k<topV.length;k++) for(let l=k+1;l<topV.length;l++){
+        const x1=Math.min(topV[k].pos,topV[l].pos);
+        const x2=Math.max(topV[k].pos,topV[l].pos);
+        if(x2-x1<minW) continue;
+
+        // Score: sum edge values along the 4 borders
+        let score=0,count=0;
+        // top & bottom
+        for(let x=x1;x<=x2;x+=2){
+          score+=hEdges[y1*w+x]+hEdges[y2*w+x];count+=2;
+        }
+        // left & right
+        for(let y=y1;y<=y2;y+=2){
+          score+=vEdges[y*w+x1]+vEdges[y*w+x2];count+=2;
+        }
+        score=count>0?score/count:0;
+
+        // Bonus for larger rectangles (prefer the gel, not noise)
+        const area=(x2-x1)*(y2-y1);
+        const areaRatio=area/(w*h);
+        score*=(1+areaRatio*0.5);
+
+        if(score>bestScore){
+          bestScore=score;
+          bestRect={x:x1,y:y1,w:x2-x1,h:y2-y1};
+        }
+      }
+    }
+
+    // If no good peaks found, fallback: use adaptive threshold to find the rectangle
+    if(bestScore<=0||topH.length<2||topV.length<2){
+      // Fallback: find bounding box of darker region
+      let mean=0;for(let i=0;i<w*h;i++) mean+=gray[i];mean/=(w*h);
+      const thr=mean*0.85;
+      let x1=w,y1=h,x2=0,y2=0;
+      for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+        if(gray[y*w+x]<thr){
+          if(x<x1)x1=x;if(x>x2)x2=x;if(y<y1)y1=y;if(y>y2)y2=y;
+        }
+      }
+      if(x2>x1&&y2>y1) bestRect={x:x1,y:y1,w:x2-x1,h:y2-y1};
+    }
+
+    return{
+      x:bestRect.x/sd,
+      y:bestRect.y/sd,
+      w:bestRect.w/sd,
+      h:bestRect.h/sd
+    };
+  }
+
   // --- Layout ---
   function computeLayout(img){
     const rect=canvasArea.getBoundingClientRect();
@@ -380,26 +531,70 @@
     const cw=mainCanvas.width,ch=mainCanvas.height;
     ctx.clearRect(0,0,cw,ch);
     ctx.drawImage(item.img,offX,offY,dispW,dispH);
-    const circle=item.circle;if(!circle)return;
-    const cx=circle.cx*scale+offX,cy=circle.cy*scale+offY,r=circle.r*scale;
-    const side=r*2*(cropSize/100),half=side/2;
 
-    ctx.save();ctx.beginPath();ctx.rect(0,0,cw,ch);
-    ctx.arc(cx,cy,r,0,Math.PI*2,true);ctx.closePath();
-    ctx.fillStyle='rgba(0,0,0,0.45)';ctx.fill();ctx.restore();
+    const shape=item.circle||item.rect;
+    if(!shape){
+      // filename overlay
+      ctx.save();ctx.font='12px JetBrains Mono';ctx.fillStyle='rgba(255,255,255,0.5)';
+      ctx.fillText(item.name,offX+8,offY+20);ctx.restore();
+      return;
+    }
 
-    ctx.save();ctx.setLineDash([6,4]);
-    ctx.strokeStyle=item.confirmed?'#ffc84e':'#a78bfa';
-    ctx.lineWidth=2;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();ctx.restore();
+    if(item.circle&&!item.rect){
+      // Circle mode drawing
+      const circle=item.circle;
+      const cx=circle.cx*scale+offX,cy=circle.cy*scale+offY,r=circle.r*scale;
+      const side=r*2*(cropSize/100),half=side/2;
 
-    ctx.save();ctx.setLineDash([4,3]);ctx.strokeStyle='rgba(255,255,255,0.7)';
-    ctx.lineWidth=1.5;ctx.strokeRect(cx-half,cy-half,side,side);ctx.restore();
+      ctx.save();ctx.beginPath();ctx.rect(0,0,cw,ch);
+      ctx.arc(cx,cy,r,0,Math.PI*2,true);ctx.closePath();
+      ctx.fillStyle='rgba(0,0,0,0.45)';ctx.fill();ctx.restore();
 
-    for(const deg of[0,90,180,270]){
-      const rad=deg*Math.PI/180;
-      ctx.beginPath();ctx.arc(cx+r*Math.cos(rad),cy+r*Math.sin(rad),6,0,Math.PI*2);
-      ctx.fillStyle=item.confirmed?'#ffc84e':'#f472b6';ctx.fill();
-      ctx.strokeStyle='#0a0f14';ctx.lineWidth=2;ctx.stroke();
+      ctx.save();ctx.setLineDash([6,4]);
+      ctx.strokeStyle=item.confirmed?'#ffc84e':'#a78bfa';
+      ctx.lineWidth=2;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();ctx.restore();
+
+      ctx.save();ctx.setLineDash([4,3]);ctx.strokeStyle='rgba(255,255,255,0.7)';
+      ctx.lineWidth=1.5;ctx.strokeRect(cx-half,cy-half,side,side);ctx.restore();
+
+      for(const deg of[0,90,180,270]){
+        const rad=deg*Math.PI/180;
+        ctx.beginPath();ctx.arc(cx+r*Math.cos(rad),cy+r*Math.sin(rad),6,0,Math.PI*2);
+        ctx.fillStyle=item.confirmed?'#ffc84e':'#f472b6';ctx.fill();
+        ctx.strokeStyle='#0a0f14';ctx.lineWidth=2;ctx.stroke();
+      }
+    } else if(item.rect){
+      // Rectangle mode drawing
+      const r=item.rect;
+      const rx=r.x*scale+offX,ry=r.y*scale+offY,rw=r.w*scale,rh=r.h*scale;
+
+      // Dim outside region
+      ctx.save();ctx.beginPath();
+      ctx.rect(0,0,cw,ch);
+      ctx.rect(rx,ry,rw,rh);
+      ctx.fillStyle='rgba(0,0,0,0.45)';
+      // Use evenodd to cut out the rectangle
+      ctx.fill('evenodd');ctx.restore();
+
+      // Rectangle border
+      ctx.save();ctx.setLineDash([6,4]);
+      ctx.strokeStyle=item.confirmed?'#ffc84e':'#a78bfa';
+      ctx.lineWidth=2;ctx.strokeRect(rx,ry,rw,rh);ctx.restore();
+
+      // Corner handles
+      const corners=[[rx,ry],[rx+rw,ry],[rx+rw,ry+rh],[rx,ry+rh]];
+      for(const[hx,hy]of corners){
+        ctx.beginPath();ctx.arc(hx,hy,6,0,Math.PI*2);
+        ctx.fillStyle=item.confirmed?'#ffc84e':'#f472b6';ctx.fill();
+        ctx.strokeStyle='#0a0f14';ctx.lineWidth=2;ctx.stroke();
+      }
+      // Edge midpoint handles
+      const mids=[[rx+rw/2,ry],[rx+rw,ry+rh/2],[rx+rw/2,ry+rh],[rx,ry+rh/2]];
+      for(const[hx,hy]of mids){
+        ctx.beginPath();ctx.arc(hx,hy,4,0,Math.PI*2);
+        ctx.fillStyle=item.confirmed?'#ffc84e':'#c4b5fd';ctx.fill();
+        ctx.strokeStyle='#0a0f14';ctx.lineWidth=1.5;ctx.stroke();
+      }
     }
 
     // filename overlay
@@ -440,14 +635,25 @@
     $('cropAllBtn').disabled=confirmed===0;
   }
 
+  function detectCurrentShape(item){
+    if(detectionMode==='rect'){
+      item.rect=detectGelRect(item.img);
+      item.circle=null;
+    } else {
+      item.circle=detectPlate(item.img);
+      item.rect=null;
+    }
+  }
+
   function showCurrent(){
     const item=images[currentIdx];if(!item)return;
     requestAnimationFrame(()=>{
       computeLayout(item.img);
-      if(!item.circle){
+      const hasShape=(detectionMode==='rect')?item.rect:item.circle;
+      if(!hasShape){
         $('detectingLabel').classList.remove('hidden');
         setTimeout(()=>{
-          item.circle=detectPlate(item.img);
+          detectCurrentShape(item);
           $('detectingLabel').classList.add('hidden');
           draw();
         },30);
@@ -480,6 +686,19 @@
 
   // --- Crop ---
   function cropItem(item){
+    if(item.rect){
+      // Rectangle crop
+      const r=item.rect;
+      const iw=item.img.naturalWidth,ih=item.img.naturalHeight;
+      const sx=Math.max(0,r.x),sy=Math.max(0,r.y);
+      const sw=Math.min(r.w,iw-sx),sh=Math.min(r.h,ih-sy);
+      const cv=document.createElement('canvas');
+      // Maintain aspect ratio, fit into 680px max dimension
+      const outScale=Math.min(680/sw,680/sh);
+      cv.width=Math.round(sw*outScale);cv.height=Math.round(sh*outScale);
+      cv.getContext('2d').drawImage(item.img,sx,sy,sw,sh,0,0,cv.width,cv.height);
+      return cv.toDataURL('image/png');
+    }
     const c=item.circle;if(!c)return null;
     const iw=item.img.naturalWidth,ih=item.img.naturalHeight;
     const side=c.r*2*(cropSize/100),half=side/2;
@@ -514,7 +733,8 @@
       const info=document.createElement('div');info.className='card-info';
       const nm=document.createElement('div');nm.className='card-name';
       const now=new Date();const dateStr=now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0');
-      const cropName=dateStr+'_plate'+(i+1)+'.png';
+      const prefix=item.rect?'gel':'plate';
+      const cropName=dateStr+'_'+prefix+(i+1)+'.png';
       nm.textContent=cropName;info.appendChild(nm);
 
       const actions=document.createElement('div');actions.className='card-actions';
@@ -592,6 +812,22 @@
   $('addMoreBtn').addEventListener('click',()=>$('addMoreInput').click());
   $('addMoreInput').addEventListener('change',e=>addFiles(e.target.files));
 
+  $('modeToggleBtn').addEventListener('click',()=>{
+    detectionMode=detectionMode==='circle'?'rect':'circle';
+    $('modeToggleBtn').textContent=detectionMode==='circle'?'○ 원형':'▭ 사각형';
+    // Re-detect current image with new mode
+    const item=images[currentIdx];
+    if(item){
+      $('detectingLabel').classList.remove('hidden');
+      setTimeout(()=>{
+        detectCurrentShape(item);
+        item.confirmed=false;
+        $('detectingLabel').classList.add('hidden');
+        renderThumbs();updateProgress();draw();
+      },30);
+    }
+  });
+
   $('cropSizeSlider').addEventListener('input',function(){
     cropSize=Number(this.value);$('cropSizeVal').textContent=cropSize+'%';draw();
   });
@@ -599,7 +835,7 @@
   $('redetectBtn').addEventListener('click',()=>{
     const item=images[currentIdx];if(!item)return;
     $('detectingLabel').classList.remove('hidden');
-    setTimeout(()=>{item.circle=detectPlate(item.img);$('detectingLabel').classList.add('hidden');draw();},30);
+    setTimeout(()=>{detectCurrentShape(item);$('detectingLabel').classList.add('hidden');draw();},30);
   });
 
   $('confirmBtn').addEventListener('click',()=>{
@@ -624,7 +860,8 @@
     function next(){
       if(idx>=images.length){renderThumbs();updateProgress();showCurrent();return;}
       const item=images[idx];
-      if(!item.circle) item.circle=detectPlate(item.img);
+      const hasShape=(detectionMode==='rect')?item.rect:item.circle;
+      if(!hasShape) detectCurrentShape(item);
       item.confirmed=true;idx++;
       $('progressText').textContent='자동 처리 '+idx+'/'+images.length;
       $('progressFill').style.width=(idx/images.length*100)+'%';
@@ -652,7 +889,8 @@
       const a=document.createElement('a');
       a.href=item.dataURL;
       const now=new Date();const ds=now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+String(now.getDate()).padStart(2,'0');
-      a.download=ds+'_plate'+(i+1)+'.png';
+      const prefix=item.rect?'gel':'plate';
+      a.download=ds+'_'+prefix+(i+1)+'.png';
       a.click();
       i++;
       setTimeout(dlNext,300);
@@ -677,7 +915,8 @@
       for(let i=0;i<confirmed.length;i++){
         const resp=await fetch(confirmed[i].dataURL);
         const blob=await resp.blob();
-        files.push(new File([blob],ds+'_plate'+(i+1)+'.png',{type:'image/png'}));
+        const prefix=confirmed[i].rect?'gel':'plate';
+        files.push(new File([blob],ds+'_'+prefix+(i+1)+'.png',{type:'image/png'}));
       }
       if(navigator.canShare&&navigator.canShare({files})){
         await navigator.share({files,title:'Plate Crops'});
@@ -687,7 +926,8 @@
         function dl(){
           if(idx>=confirmed.length){showToast('공유 불가 → '+confirmed.length+'장 다운로드됨');return;}
           const a=document.createElement('a');a.href=confirmed[idx].dataURL;
-          a.download=ds+'_plate'+(idx+1)+'.png';a.click();idx++;setTimeout(dl,300);
+          const pfx=confirmed[idx].rect?'gel':'plate';
+          a.download=ds+'_'+pfx+(idx+1)+'.png';a.click();idx++;setTimeout(dl,300);
         }
         dl();
       }
@@ -701,22 +941,79 @@
 
   // Pointer
   canvasArea.addEventListener('pointerdown',e=>{
-    const item=images[currentIdx];if(!item||!item.circle)return;
+    const item=images[currentIdx];if(!item)return;
     const pos=toImgCoords(e.clientX,e.clientY);
-    const c=item.circle;
-    const dist=Math.sqrt((pos.x-c.cx)**2+(pos.y-c.cy)**2);
-    if(Math.abs(dist-c.r)<c.r*.12) dragging={type:'resize'};
-    else if(dist<c.r) dragging={type:'move',ox:pos.x-c.cx,oy:pos.y-c.cy};
-    else return;
-    canvasArea.setPointerCapture(e.pointerId);
+
+    if(item.rect){
+      const r=item.rect;
+      const tol=Math.max(r.w,r.h)*.06;
+      // Check corners first
+      const corners=[
+        {edge:'tl',x:r.x,y:r.y},{edge:'tr',x:r.x+r.w,y:r.y},
+        {edge:'br',x:r.x+r.w,y:r.y+r.h},{edge:'bl',x:r.x,y:r.y+r.h}
+      ];
+      for(const c of corners){
+        if(Math.abs(pos.x-c.x)<tol&&Math.abs(pos.y-c.y)<tol){
+          dragging={type:'rect-corner',edge:c.edge,startRect:{...r}};
+          canvasArea.setPointerCapture(e.pointerId);return;
+        }
+      }
+      // Check edges
+      if(Math.abs(pos.y-r.y)<tol&&pos.x>r.x&&pos.x<r.x+r.w){dragging={type:'rect-edge',edge:'top'};canvasArea.setPointerCapture(e.pointerId);return;}
+      if(Math.abs(pos.y-(r.y+r.h))<tol&&pos.x>r.x&&pos.x<r.x+r.w){dragging={type:'rect-edge',edge:'bottom'};canvasArea.setPointerCapture(e.pointerId);return;}
+      if(Math.abs(pos.x-r.x)<tol&&pos.y>r.y&&pos.y<r.y+r.h){dragging={type:'rect-edge',edge:'left'};canvasArea.setPointerCapture(e.pointerId);return;}
+      if(Math.abs(pos.x-(r.x+r.w))<tol&&pos.y>r.y&&pos.y<r.y+r.h){dragging={type:'rect-edge',edge:'right'};canvasArea.setPointerCapture(e.pointerId);return;}
+      // Inside = move
+      if(pos.x>r.x&&pos.x<r.x+r.w&&pos.y>r.y&&pos.y<r.y+r.h){
+        dragging={type:'rect-move',ox:pos.x-r.x,oy:pos.y-r.y};
+        canvasArea.setPointerCapture(e.pointerId);return;
+      }
+      return;
+    }
+
+    if(item.circle){
+      const c=item.circle;
+      const dist=Math.sqrt((pos.x-c.cx)**2+(pos.y-c.cy)**2);
+      if(Math.abs(dist-c.r)<c.r*.12) dragging={type:'resize'};
+      else if(dist<c.r) dragging={type:'move',ox:pos.x-c.cx,oy:pos.y-c.cy};
+      else return;
+      canvasArea.setPointerCapture(e.pointerId);
+    }
   });
   canvasArea.addEventListener('pointermove',e=>{
     if(!dragging)return;
-    const item=images[currentIdx];if(!item||!item.circle)return;
-    const pos=toImgCoords(e.clientX,e.clientY);const c=item.circle;
-    if(dragging.type==='move'){c.cx=pos.x-dragging.ox;c.cy=pos.y-dragging.oy;}
-    else c.r=Math.max(30,Math.sqrt((pos.x-c.cx)**2+(pos.y-c.cy)**2));
-    item.confirmed=false;renderThumbs();updateProgress();draw();
+    const item=images[currentIdx];if(!item)return;
+    const pos=toImgCoords(e.clientX,e.clientY);
+
+    if(item.rect&&dragging.type.startsWith('rect-')){
+      const r=item.rect;
+      if(dragging.type==='rect-move'){
+        r.x=pos.x-dragging.ox;r.y=pos.y-dragging.oy;
+      } else if(dragging.type==='rect-corner'){
+        const e=dragging.edge;
+        if(e==='tl'){const dx=pos.x-r.x,dy=pos.y-r.y;r.x=pos.x;r.y=pos.y;r.w-=dx;r.h-=dy;}
+        else if(e==='tr'){const dy=pos.y-r.y;r.w=pos.x-r.x;r.y=pos.y;r.h-=dy;}
+        else if(e==='br'){r.w=pos.x-r.x;r.h=pos.y-r.y;}
+        else if(e==='bl'){const dx=pos.x-r.x;r.x=pos.x;r.w-=dx;r.h=pos.y-r.y;}
+        r.w=Math.max(30,r.w);r.h=Math.max(30,r.h);
+      } else if(dragging.type==='rect-edge'){
+        const edge=dragging.edge;
+        if(edge==='top'){const dy=pos.y-r.y;r.y=pos.y;r.h-=dy;}
+        else if(edge==='bottom'){r.h=pos.y-r.y;}
+        else if(edge==='left'){const dx=pos.x-r.x;r.x=pos.x;r.w-=dx;}
+        else if(edge==='right'){r.w=pos.x-r.x;}
+        r.w=Math.max(30,r.w);r.h=Math.max(30,r.h);
+      }
+      item.confirmed=false;renderThumbs();updateProgress();draw();
+      return;
+    }
+
+    if(item.circle){
+      const c=item.circle;
+      if(dragging.type==='move'){c.cx=pos.x-dragging.ox;c.cy=pos.y-dragging.oy;}
+      else if(dragging.type==='resize') c.r=Math.max(30,Math.sqrt((pos.x-c.cx)**2+(pos.y-c.cy)**2));
+      item.confirmed=false;renderThumbs();updateProgress();draw();
+    }
   });
   canvasArea.addEventListener('pointerup',()=>{dragging=null});
   canvasArea.addEventListener('pointerleave',()=>{dragging=null});
