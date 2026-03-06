@@ -396,6 +396,7 @@
       <div class="bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
     </div>
   </div>
+  <button class="btn btn-ghost btn-sm" id="homeBtn" title="홈으로">⌂ 홈</button>
   <button class="btn btn-ghost btn-sm" id="helpBtn" title="사용법">? 사용법</button>
 </div>
 
@@ -1302,9 +1303,6 @@
     $('progressFill').style.width='0%';
     $('fileInput').value='';
     ctx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
-    // Go back to home screen
-    $('appContainer').classList.add('hidden');
-    $('homeScreen').classList.remove('hidden');
   }
 
   // --- Events ---
@@ -1558,6 +1556,13 @@
     resizer.addEventListener('pointerup',function(){resizer.classList.remove('active')});
     resizer.addEventListener('lostpointercapture',function(){resizer.classList.remove('active')});
   })();
+
+  // Home button
+  $('homeBtn').addEventListener('click',()=>{
+    resetAll();
+    $('appContainer').classList.add('hidden');
+    $('homeScreen').classList.remove('hidden');
+  });
 
   // Help modal
   $('helpBtn').addEventListener('click',()=>$('helpOverlay').classList.remove('hidden'));
