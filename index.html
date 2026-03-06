@@ -245,6 +245,45 @@
   .hidden{display:none!important}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
+  /* Home screen */
+  .home-screen{
+    position:fixed;inset:0;z-index:2000;
+    background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:48px;
+  }
+  .home-screen.hidden{display:none}
+  .home-title{
+    font-size:36px;font-weight:700;letter-spacing:.15em;
+    background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  }
+  .home-subtitle{
+    font-size:14px;color:var(--muted);margin-top:-32px;text-align:center;line-height:1.6;
+  }
+  .home-cards{
+    display:flex;gap:32px;flex-wrap:wrap;justify-content:center;
+    padding:0 20px;
+  }
+  .home-card{
+    width:260px;padding:40px 28px;
+    background:var(--surface);border:2px solid var(--border);border-radius:16px;
+    cursor:pointer;transition:all .2s;text-align:center;
+    display:flex;flex-direction:column;align-items:center;gap:16px;
+  }
+  .home-card:hover{
+    border-color:#a78bfa;transform:translateY(-4px);
+    box-shadow:0 12px 40px rgba(167,139,250,.15);
+  }
+  .home-card-icon{
+    font-size:56px;line-height:1;
+  }
+  .home-card-title{
+    font-size:18px;font-weight:700;color:var(--text);
+  }
+  .home-card-desc{
+    font-size:12px;color:var(--muted);line-height:1.6;
+  }
+
   /* 콘텐츠 섹션 스타일 */
   .content-section{
     background:#0f0d19;
@@ -326,7 +365,25 @@
 </head>
 <body>
 
-<div class="app-container">
+<!-- Home Screen -->
+<div class="home-screen" id="homeScreen">
+  <h1 class="home-title">FORLAB</h1>
+  <p class="home-subtitle">실험실 이미지를 자동으로 감지하고 크롭합니다.<br>어떤 사진을 자르시겠습니까?</p>
+  <div class="home-cards">
+    <div class="home-card" id="homeCardPlate">
+      <div class="home-card-icon">🧫</div>
+      <div class="home-card-title">플레이트 (페트리 접시)</div>
+      <div class="home-card-desc">원형 페트리 접시 사진을<br>자동으로 감지하여 크롭합니다</div>
+    </div>
+    <div class="home-card" id="homeCardGel">
+      <div class="home-card-icon">🧬</div>
+      <div class="home-card-title">젤 (전기영동)</div>
+      <div class="home-card-desc">젤 전기영동 사진의 영역을<br>자동으로 감지하여 크롭합니다</div>
+    </div>
+  </div>
+</div>
+
+<div class="app-container hidden" id="appContainer">
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
@@ -463,7 +520,7 @@
     </div>
   </div>
 </div>
-</div><!-- /app-container -->
+</div><!-- /appContainer -->
 
 <!-- 콘텐츠 섹션: 애드센스 정책 준수를 위한 게시자 콘텐츠 -->
 <div class="content-section">
@@ -620,6 +677,21 @@
   let detectionMode='circle'; // 'circle' or 'rect'
 
   const $=id=>document.getElementById(id);
+
+  // --- Home Screen ---
+  function startApp(mode){
+    detectionMode=mode;
+    $('homeScreen').classList.add('hidden');
+    $('appContainer').classList.remove('hidden');
+    $('modeToggleBtn').textContent=mode==='circle'?'○ 원형':'▭ 사각형';
+    // Trigger layout after app becomes visible
+    setTimeout(()=>{
+      if(images.length){const item=images[currentIdx];if(item&&item.img){computeLayout(item.img);draw();}}
+    },50);
+  }
+  $('homeCardPlate').addEventListener('click',()=>startApp('circle'));
+  $('homeCardGel').addEventListener('click',()=>startApp('rect'));
+
   const mainCanvas=$('mainCanvas'),ctx=mainCanvas.getContext('2d');
   const canvasArea=$('canvasArea');
 
@@ -1230,6 +1302,9 @@
     $('progressFill').style.width='0%';
     $('fileInput').value='';
     ctx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
+    // Go back to home screen
+    $('appContainer').classList.add('hidden');
+    $('homeScreen').classList.remove('hidden');
   }
 
   // --- Events ---
